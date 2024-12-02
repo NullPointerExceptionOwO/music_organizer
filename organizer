@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+# --------------------
+# Organizer for music files with multiprocessing support
+
+import argparse
+import datetime
+import os
+import sys
+from multiprocessing import Pool, cpu_count, current_process
+from mutagen import File
+
+MUTAGEN_SUPPORTED_FORMATS_EXTENSIONS = (
+    '.asf',   
+    '.flac',   
+    '.mp4',   
+    '.ape',   
+    '.mp3',   
+    '.mpc',   
+    '.opus',   
+    '.flac',   
+    '.speex',   
+    '.theora',   
+    '.vorbis',   
+    '.tta',   
+    '.wv',   
+    '.ofr',   
+    '.aiff',   
+)
+EXEC_TIME = datetime.datetime.now()
+
+
+def pmesg(message: str) -> None:
+    """
+    Prints message with timestamp to stderr
+
+    Args:
+        message(str): Message to print
+    """
+    sys.stderr.write(
+        f' \x1b[34m[I@{datetime.datetime.now() - EXEC_TIME}] [{current_process().name}]\x1b[0m {message}\n'
+    )
+
+
+def pwarn(message: str) -> None:
+    """
+    Prints warning message with timestamp to stderr
+
+    Args:
+        message(str): Message to print
+    """
+    sys.stderr.write(
+        f' \x1b[33m[W@{datetime.datetime.now() - EXEC_TIME}] [{current_process().name}] {message}\x1b[0m\n'
+    )
+
+
+def perr(message: str) -> None:
+    """
+    Prints error message with timestamp to stderr
+
+    Args:
+        message(str): Message to print
+    """
+    sys.stderr.write(
+        f' \x1b[31m[E@{datetime.datetime.now() - EXEC_TIME}] [{current_process().name}] {message}\x1b[0m\n'
+    )
+
+
+def sanitize_filename(filename: str) -> str:
+    """
+    Bullshit fs protection
+
+    Args:
+        filename(str): String to sanitize
+
+    Returns:
+        str: Sanitized string
+    """
+    return ''.join(
+        c for c in filename if c.isalnum() or c in (' ', '_')
+    ).rstrip()
+
+
+# TODO: Clean up code
+def process_file(file_path: str, root: str) -> None:
+    """
+    Read file's metadata and move it according to it.
+
+    Args:
+        file_path(str): Path to file
+        directory(str): Directory with this file
+    """
+    audio = File(file_path)
+    if not audio:
+        perr(f'Failed to open "{file_path}"')
+        return
+    artist = audio.get('artist', [''])[0]
+    album = audio.get('album', [''])[0]
+    track = audio.get('title', [''])[0]
+    trackno = audio.get('tracknumber', [''])[0].replace('/', ' of ')
+    if not (artist and album and track and trackno):
+        pwarn(
+            f'Skipping "{file_path}" ((artist, album, track, trackno): {(artist, album, track, trackno)})'
+        )
+        return
+    artist = sanitize_filename(artist)
+    album = sanitize_filename(album)
+    track = sanitize_filename(track)
+    track_placement_directory = os.path.join(root, artist, album)
+    os.makedirs(track_placement_directory, exist_ok=True)
+    track_location = os.path.join(
+        track_placement_directory,
+        f'{trackno} -- {track}{os.path.splitext(file_path)[1]}',
+    )
+    if not os.path.exists(track_location):
+        os.rename(file_path, track_location)
+        pmesg(f'"{file_path}" -> "{track_location}"')
+
+
+def organize_music_library(args: argparse.Namespace) -> None:
+    """
+    Organize the music library.
+
+    Args:
+        args(argparse.Namespace): Program's argv
+    """
+    if not os.path.exists(args.directory):
+        perr("No valid directory specified")
+        return
+    file_paths = [
+        os.path.join(root, file)
+        for root, _, files in os.walk(args.directory)
+        for file in files
+        if os.path.splitext(file)[1] in MUTAGEN_SUPPORTED_FORMATS_EXTENSIONS
+    ]
+    pmesg(
+        f'Using "{args.directory}" as music library. Files count: {len(file_paths)}'
+    )
+    pmesg(f'Threads count: {args.j}')
+    with Pool(processes=args.j) as pool:
+        pool.starmap(
+            process_file,
+            [(file_path, args.directory) for file_path in file_paths],
+        )
+    pmesg('Finished.')
+
+
+def _m() -> None:
+    parser = argparse.ArgumentParser(
+        description='Organize music library following this pattern Artist/Album/Track'
+    )
+    parser.add_argument('directory', type=str, help='Music library')
+    parser.add_argument(
+        '-j',
+        default=cpu_count() - 1 if cpu_count() > 1 else 1,
+        type=int,
+        help='Threads count',
+    )
+    args = parser.parse_args()
+    organize_music_library(args)
+
+
+if __name__ == '__main__':
+    try:
+        _m()
+    except KeyboardInterrupt:
+        perr('KeyboardInterrupt')
+        sys.exit(1)
